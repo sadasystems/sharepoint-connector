@@ -283,5 +283,10 @@
       <version>2.3.0</version>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>com.sadasystems.gcs</groupId>
+      <artifactId>gcs-utils</artifactId>
+      <version>1.0</version>
+    </dependency>
   </dependencies>
 </project>

@@ -1783,7 +1783,8 @@ class SharePointRepository implements Repository {
       fileExtension = filePath.substring(filePath.lastIndexOf('.')).toLowerCase(Locale.ENGLISH);
     }
     FileInfo fi = httpClient.issueGetRequest(sharepointFileUrl.toURL());
-    String contentType;
+
+    String contentType = null;
     if (FILE_EXTENSION_TO_MIME_TYPE_MAPPING.containsKey(fileExtension)) {
       contentType = FILE_EXTENSION_TO_MIME_TYPE_MAPPING.get(fileExtension);
       log.log(
@@ -1792,7 +1793,20 @@ class SharePointRepository implements Repository {
               new Object[] {contentType, fileExtension});
       item.setMimeType(contentType);
     } else {
-      contentType = fi.getFirstHeaderWithName("Content-Type");
+      try {
+        contentType = fi.getFirstHeaderWithName("Content-Type");
+      }
+      catch (Exception ex)
+      {
+        log.log(Level.INFO, "ERROR - getting content type::[" + filePath + "] :: " + ex.getMessage());
+        if (fi ==null)
+        {
+          log.log(Level.INFO, "ERROR - FI is NULL for ::" + filePath + "]");
+        }
+        //Consume it for now
+        //throw ex;
+      }
+
       if (contentType != null) {
         String lowerType = contentType.toLowerCase(Locale.ENGLISH);
         if (MIME_TYPE_MAPPING.containsKey(lowerType)) {
@@ -1825,8 +1839,9 @@ class SharePointRepository implements Repository {
 
       //TODO - how to determine the size of the file from the stream
       if (entityRecognition != null) {
+          FileInfo fiTika = httpClient.issueGetRequest(sharepointFileUrl.toURL());
         //File docFile = doc.toFile();
-        InputStream tikaFileInputStream = fi.getContents();
+        InputStream tikaFileInputStream = fiTika.getContents();
         try {
           Multimap<String, Object> entities;
 
@@ -1845,7 +1860,7 @@ class SharePointRepository implements Repository {
           multimap.putAll(entities);
         } catch (Exception e) {
           // } catch (TikaException | SAXException e) {
-          log.log(Level.WARNING, "Error processing EntityRecognition", e);
+          log.log(Level.WARNING, "Error processing EntityRecognition", e.getMessage());
         } finally {
           tikaFileInputStream.close();
         }
