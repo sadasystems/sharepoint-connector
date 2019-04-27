@@ -1791,9 +1791,12 @@ class SharePointRepository implements Repository {
     }
     FileInfo fi = httpClient.issueGetRequest(sharepointFileUrl.toURL());
     // SADA Changes
-    InputStream contentStream = fi.getContents();
-    File tempFile = File.createTempFile("temp", ".dat", tempDownloadFolder);
-    FileUtils.copyInputStreamToFile(contentStream, tempFile);
+      File tempFile = null;
+      if(fi != null) {
+          InputStream contentStream = fi.getContents();
+          tempFile = File.createTempFile("temp", ".dat", tempDownloadFolder);
+          FileUtils.copyInputStreamToFile(contentStream, tempFile);
+      }
     // End of SADA Changes
 
     String contentType = null;
@@ -1850,7 +1853,7 @@ class SharePointRepository implements Repository {
       //Entity Extraction
 
       //TODO - how to determine the size of the file from the stream
-      if (entityRecognition != null) {
+      if (entityRecognition != null && tempFile != null) {
         InputStream tikaFileInputStream = new FileInputStream(tempFile);
         try {
           Multimap<String, Object> entities;
