@@ -22,6 +22,7 @@ import static com.google.enterprise.cloudsearch.sdk.indexing.IndexingItemBuilder
 
 import com.google.api.client.http.AbstractInputStreamContent;
 import com.google.api.client.http.ByteArrayContent;
+import com.google.api.client.http.FileContent;
 import com.google.api.client.http.HttpMediaType;
 import com.google.api.client.util.DateTime;
 import com.google.api.client.util.Strings;
@@ -114,6 +115,7 @@ import javax.xml.ws.Holder;
 
 import com.sadasystems.gcs.utils.EntityRecognition;
 import com.sadasystems.gcs.utils.TikaUtils;
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang.StringUtils;
 import org.w3c.dom.Attr;
@@ -205,6 +207,7 @@ class SharePointRepository implements Repository {
   private static final String ENTITY_RECOGNITION_FOLDER = "entityRecognitionFolder";
   private static final String MAX_FILE_SIZE_MB_TO_PARSE = "maxFileSizeMBToParse";
   private static final String EXTRA_STRUCTURED_DATA = "extraStructuredData";
+  private static final String TEMP_DOWNLOAD_FOLDER = "tempDownloadFolder";
 
   /** Look for entities within content of files **/
   private EntityRecognition entityRecognition;
@@ -214,6 +217,8 @@ class SharePointRepository implements Repository {
   private int maxFileSizeMBToParse = 10;
   /** extra structured data to add to all items **/
   private Multimap<String,Object> extraStructuredData;
+  /** temp folder for downloaded SharePoint files **/
+  private File tempDownloadFolder;
 
   private static final TimeZone gmt = TimeZone.getTimeZone("GMT");
   /** RFC 822 date format, as updated by RFC 1123. */
@@ -437,6 +442,8 @@ class SharePointRepository implements Repository {
     for(String pair : metadataPairs) {
       extraStructuredData.put(StringUtils.substringBefore(pair, "|"), StringUtils.substringAfter(pair, "|"));
     }
+
+    tempDownloadFolder = new File(Configuration.getString(TEMP_DOWNLOAD_FOLDER, System.getProperty("java.io.tmpdir")).get());
 
     //End of SADA Changes
   }
@@ -1783,6 +1790,11 @@ class SharePointRepository implements Repository {
       fileExtension = filePath.substring(filePath.lastIndexOf('.')).toLowerCase(Locale.ENGLISH);
     }
     FileInfo fi = httpClient.issueGetRequest(sharepointFileUrl.toURL());
+    // SADA Changes
+    InputStream contentStream = fi.getContents();
+    File tempFile = File.createTempFile("temp", ".dat", tempDownloadFolder);
+    FileUtils.copyInputStreamToFile(contentStream, tempFile);
+    // End of SADA Changes
 
     String contentType = null;
     if (FILE_EXTENSION_TO_MIME_TYPE_MAPPING.containsKey(fileExtension)) {
@@ -1839,9 +1851,7 @@ class SharePointRepository implements Repository {
 
       //TODO - how to determine the size of the file from the stream
       if (entityRecognition != null) {
-          FileInfo fiTika = httpClient.issueGetRequest(sharepointFileUrl.toURL());
-        //File docFile = doc.toFile();
-        InputStream tikaFileInputStream = fiTika.getContents();
+        InputStream tikaFileInputStream = new FileInputStream(tempFile);
         try {
           Multimap<String, Object> entities;
 
@@ -1853,6 +1863,11 @@ class SharePointRepository implements Repository {
           }
           catch (Exception ex)
           {
+            try {
+              tikaFileInputStream.close();
+            } catch (Exception e){
+            }
+            tikaFileInputStream = new FileInputStream(tempFile);
             String content = IOUtils.toString(tikaFileInputStream, "UTF-8");
             entities = entityRecognition.findEntities(content, filePath);
           }
@@ -1876,15 +1891,26 @@ class SharePointRepository implements Repository {
     {
       //
     }
+
+    if (isHtmlContent(contentType)) {
+      try {
+        InputStream fileInputStream = new FileInputStream(tempFile);
+        return htmlContentFilter.getParsedHtmlContent(fileInputStream, baseUrl, contentType);
+      } finally {
+        try {
+          tempFile.delete();
+        } catch (Exception e) {
+          log.log(
+                  Level.WARNING,
+                  "Error deleting FileContent File: {0}",
+                  new Object[] {tempFile.toString()});
+        }
+      }
+    } else {
+      return new FileContent(contentType, tempFile);
+    }
     //End of SADA Changes
 
-    try (InputStream contentStream = fi.getContents()) {
-      if (isHtmlContent(contentType)) {
-        return htmlContentFilter.getParsedHtmlContent(contentStream, baseUrl, contentType);
-      } else {
-        return new ByteArrayContent(contentType, ByteStreams.toByteArray(contentStream));
-      }
-    }
   }
 
   @VisibleForTesting
