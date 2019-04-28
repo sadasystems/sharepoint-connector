@@ -421,6 +421,7 @@ class SharePointRepository implements Repository {
           entityRecognition = new EntityRecognition(Paths.get(entityFolderPath));
           try {
             maxFileSizeMBToParse = Integer.parseInt(Configuration.getString("maxFileSizeMBToParse", "10").get());
+            maxFileSizeMBToParse = maxFileSizeMBToParse * 1024 * 1024;
           } catch (NumberFormatException e) {
             log.log(Level.WARNING, "maxFileSizeMBToParse must be an int", e);
           }
@@ -1790,11 +1791,23 @@ class SharePointRepository implements Repository {
       fileExtension = filePath.substring(filePath.lastIndexOf('.')).toLowerCase(Locale.ENGLISH);
     }
     FileInfo fi = httpClient.issueGetRequest(sharepointFileUrl.toURL());
+    if (fi == null)
+    {
+      log.log(Level.INFO, "ERROR Downloading ::[" + filePath + "]" );
+      throw new IOException();
+    }
     // SADA Changes
     InputStream contentStream = fi.getContents();
     File tempFile = File.createTempFile("temp", ".dat", tempDownloadFolder);
     try {
       FileUtils.copyInputStreamToFile(contentStream, tempFile);
+
+      double dFileSize = tempFile.length();
+      log.log(Level.INFO, "File Size for [" + filePath + "] :: Tmp File:[" + tempFile.getName() + "] -- [" + dFileSize + "]  bytes");
+      if (dFileSize > 1000000000)
+      {
+        throw new IOException("File Size greater than 1G");
+      }
       // End of SADA Changes
 
       String contentType = null;
@@ -1843,7 +1856,10 @@ class SharePointRepository implements Repository {
 
         //Entity Extraction
 
-        //TODO - how to determine the size of the file from the stream
+
+
+        if (dFileSize < maxFileSizeMBToParse)
+        {
         if (entityRecognition != null) {
           InputStream tikaFileInputStream = new FileInputStream(tempFile);
           try {
@@ -1872,7 +1888,15 @@ class SharePointRepository implements Repository {
           }
 
         }
-        item.setValues(multimap);
+      }
+        else
+        {
+          log.log(Level.INFO, "Excluding File from Entity Extraction - Size larger than allowed  for file [" + filePath + "]");
+        }
+
+        if (multimap != null) {
+          item.setValues(multimap);
+        }
 
       } catch (Exception ex) {
         //
