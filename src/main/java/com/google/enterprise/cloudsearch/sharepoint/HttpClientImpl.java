@@ -75,7 +75,7 @@ class HttpClientImpl implements HttpClient {
       conn.setInstanceFollowRedirects(!performBrowserLeniency);
       responseCode = conn.getResponseCode();
       if (responseCode == HttpURLConnection.HTTP_NOT_FOUND) {
-        return null;
+        throw new IOException(String.format("Got status code %d for URL %s", responseCode, url));
       }
       if (responseCode == HttpURLConnection.HTTP_OK || !performBrowserLeniency) {
         break;
