@@ -1791,129 +1791,115 @@ class SharePointRepository implements Repository {
     }
     FileInfo fi = httpClient.issueGetRequest(sharepointFileUrl.toURL());
     // SADA Changes
-      File tempFile = null;
-      if(fi != null) {
-          InputStream contentStream = fi.getContents();
-          tempFile = File.createTempFile("temp", ".dat", tempDownloadFolder);
-          FileUtils.copyInputStreamToFile(contentStream, tempFile);
-      }
-    // End of SADA Changes
+    InputStream contentStream = fi.getContents();
+    File tempFile = File.createTempFile("temp", ".dat", tempDownloadFolder);
+    try {
+      FileUtils.copyInputStreamToFile(contentStream, tempFile);
+      // End of SADA Changes
 
-    String contentType = null;
-    if (FILE_EXTENSION_TO_MIME_TYPE_MAPPING.containsKey(fileExtension)) {
-      contentType = FILE_EXTENSION_TO_MIME_TYPE_MAPPING.get(fileExtension);
-      log.log(
-              Level.FINER,
-              "Overriding content type as {0} for file extension {1}",
-              new Object[] {contentType, fileExtension});
-      item.setMimeType(contentType);
-    } else {
-      try {
-        contentType = fi.getFirstHeaderWithName("Content-Type");
-      }
-      catch (Exception ex)
-      {
-        log.log(Level.INFO, "ERROR - getting content type::[" + filePath + "] :: " + ex.getMessage());
-        if (fi ==null)
-        {
-          log.log(Level.INFO, "ERROR - FI is NULL for ::" + filePath + "]");
-        }
-        //Consume it for now
-        //throw ex;
-      }
-
-      if (contentType != null) {
-        String lowerType = contentType.toLowerCase(Locale.ENGLISH);
-        if (MIME_TYPE_MAPPING.containsKey(lowerType)) {
-          contentType = MIME_TYPE_MAPPING.get(lowerType);
-        }
+      String contentType = null;
+      if (FILE_EXTENSION_TO_MIME_TYPE_MAPPING.containsKey(fileExtension)) {
+        contentType = FILE_EXTENSION_TO_MIME_TYPE_MAPPING.get(fileExtension);
+        log.log(
+                Level.FINER,
+                "Overriding content type as {0} for file extension {1}",
+                new Object[]{contentType, fileExtension});
         item.setMimeType(contentType);
-      }
-    }
-    String lastModifiedString = fi.getFirstHeaderWithName("Last-Modified");
-    if ((lastModifiedString != null) && setLastModified) {
-      try {
-        item.setUpdateTime(
-                withValue(new DateTime(dateFormatRfc1123.get().parse(lastModifiedString))));
-      } catch (ParseException ex) {
-        log.log(Level.INFO, "Could not parse Last-Modified: {0}", lastModifiedString);
-      }
-    }
-
-    //SADA Changes
-    try
-    {
-      Multimap<String, Object> multimap = LinkedHashMultimap.create();
-
-      if (extraStructuredData.size() > 0) {
-        multimap.putAll(extraStructuredData);
-        log.log(Level.INFO, "Adding extra structured data (" + filePath + ") : " + extraStructuredData);
-      }
-
-      //Entity Extraction
-
-      //TODO - how to determine the size of the file from the stream
-      if (entityRecognition != null && tempFile != null) {
-        InputStream tikaFileInputStream = new FileInputStream(tempFile);
+      } else {
         try {
-          Multimap<String, Object> entities;
+          contentType = fi.getFirstHeaderWithName("Content-Type");
+        } catch (Exception ex) {
+          log.log(Level.INFO, "ERROR - getting content type::[" + filePath + "] :: " + ex.getMessage());
+          //Consume it for now
+          //throw ex;
+        }
 
-          log.log(Level.INFO, "Processing entities for Mime Type (" + contentType + ") : ");
-          try
-          {
-            TikaUtils.TikaResult tikaResult = TikaUtils.parse(tikaFileInputStream);
-            entities = entityRecognition.findEntities(tikaResult.getContent(), filePath);
+        if (contentType != null) {
+          String lowerType = contentType.toLowerCase(Locale.ENGLISH);
+          if (MIME_TYPE_MAPPING.containsKey(lowerType)) {
+            contentType = MIME_TYPE_MAPPING.get(lowerType);
           }
-          catch (Exception ex)
-          {
+          item.setMimeType(contentType);
+        }
+      }
+      String lastModifiedString = fi.getFirstHeaderWithName("Last-Modified");
+      if ((lastModifiedString != null) && setLastModified) {
+        try {
+          item.setUpdateTime(
+                  withValue(new DateTime(dateFormatRfc1123.get().parse(lastModifiedString))));
+        } catch (ParseException ex) {
+          log.log(Level.INFO, "Could not parse Last-Modified: {0}", lastModifiedString);
+        }
+      }
+
+      //SADA Changes
+      try {
+        Multimap<String, Object> multimap = LinkedHashMultimap.create();
+
+        if (extraStructuredData.size() > 0) {
+          multimap.putAll(extraStructuredData);
+          log.log(Level.INFO, "Adding extra structured data (" + filePath + ") : " + extraStructuredData);
+        }
+
+        //Entity Extraction
+
+        //TODO - how to determine the size of the file from the stream
+        if (entityRecognition != null) {
+          InputStream tikaFileInputStream = new FileInputStream(tempFile);
+          try {
+            Multimap<String, Object> entities;
+
+            log.log(Level.INFO, "Processing entities for Mime Type (" + contentType + ") : ");
             try {
-              tikaFileInputStream.close();
-            } catch (Exception e){
+              TikaUtils.TikaResult tikaResult = TikaUtils.parse(tikaFileInputStream);
+              entities = entityRecognition.findEntities(tikaResult.getContent(), filePath);
+            } catch (Exception ex) {
+              try {
+                tikaFileInputStream.close();
+              } catch (Exception e) {
+              }
+              tikaFileInputStream = new FileInputStream(tempFile);
+              String content = IOUtils.toString(tikaFileInputStream, "UTF-8");
+              entities = entityRecognition.findEntities(content, filePath);
             }
-            tikaFileInputStream = new FileInputStream(tempFile);
-            String content = IOUtils.toString(tikaFileInputStream, "UTF-8");
-            entities = entityRecognition.findEntities(content, filePath);
+            log.log(Level.INFO, "Found entities for file (" + filePath + ") : " + entities);
+            multimap.putAll(entities);
+          } catch (Exception e) {
+            // } catch (TikaException | SAXException e) {
+            log.log(Level.WARNING, "Error processing EntityRecognition", e.getMessage());
+          } finally {
+            tikaFileInputStream.close();
           }
-          log.log(Level.INFO, "Found entities for file (" + filePath + ") : " + entities);
-          multimap.putAll(entities);
-        } catch (Exception e) {
-          // } catch (TikaException | SAXException e) {
-          log.log(Level.WARNING, "Error processing EntityRecognition", e.getMessage());
-        } finally {
-          tikaFileInputStream.close();
+
         }
-
-      }
-
-      if (multimap != null)
-      {
         item.setValues(multimap);
-      }
-    }
-    catch (Exception ex)
-    {
-      //
-    }
 
-    if (isHtmlContent(contentType)) {
-      try {
-        InputStream fileInputStream = new FileInputStream(tempFile);
-        return htmlContentFilter.getParsedHtmlContent(fileInputStream, baseUrl, contentType);
-      } finally {
-        try {
-          tempFile.delete();
-        } catch (Exception e) {
-          log.log(
-                  Level.WARNING,
-                  "Error deleting FileContent File: {0}",
-                  new Object[] {tempFile.toString()});
-        }
+      } catch (Exception ex) {
+        //
       }
-    } else {
-      return new FileContent(contentType, tempFile);
+
+      if (isHtmlContent(contentType)) {
+        try {
+          InputStream fileInputStream = new FileInputStream(tempFile);
+          return htmlContentFilter.getParsedHtmlContent(fileInputStream, baseUrl, contentType);
+        } finally {
+          try {
+            tempFile.delete();
+          } catch (Exception e) {
+            log.log(
+                    Level.WARNING,
+                    "Error deleting FileContent File: {0}",
+                    new Object[]{tempFile.toString()});
+          }
+        }
+      } else {
+        return new FileContent(contentType, tempFile);
+      }
+    } catch(Exception e) {
+      tempFile.delete();
+      throw e;
     }
     //End of SADA Changes
-
   }
 
   @VisibleForTesting
