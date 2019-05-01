@@ -214,10 +214,10 @@ class SharePointRepository implements Repository {
   private EntityRecognition entityRecognition;
   /** Object Type for StructuredData **/
   private String objectType;
-  /** the maximum file size (in MB) that can be parsed for EntityRecognition **/
-  private int maxFileSizeMBToParse = 10;
-  /** the maximum file size (in MB) to transmit - if larger, only the metadata will be indexed **/
-  private int maxFileSizeMBToTransmit = 250;
+  /** the maximum file size (in bytes) that can be parsed for EntityRecognition **/
+  private int maxFileSizeBytesToParse = 10 * 1024 * 1024;
+  /** the maximum file size (in bytes) to transmit - if larger, only the metadata will be indexed **/
+  private int maxFileSizeBytesToTransmit = 250 * 1024 * 1024;
   /** extra structured data to add to all items **/
   private Multimap<String,Object> extraStructuredData;
   /** temp folder for downloaded SharePoint files **/
@@ -426,17 +426,17 @@ class SharePointRepository implements Repository {
           log.log(Level.WARNING, "Unable to initialize EntityRecognition", e);
         }
         try {
-          maxFileSizeMBToParse = Integer.parseInt(Configuration.getString(MAX_FILE_SIZE_MB_TO_PARSE, "10").get());
+          int maxFileSizeMBToParse = Integer.parseInt(Configuration.getString(MAX_FILE_SIZE_MB_TO_PARSE, "10").get());
+          maxFileSizeBytesToParse = maxFileSizeMBToParse * 1024 * 1024;
         } catch (NumberFormatException e) {
           log.log(Level.WARNING, "maxFileSizeMBToParse must be an int", e);
         }
-        maxFileSizeMBToParse = maxFileSizeMBToParse * 1024 * 1024;
         try {
-          maxFileSizeMBToTransmit = Integer.parseInt(Configuration.getString(MAX_FILE_SIZE_MB_TO_TRANSMIT, "250").get());
+          int maxFileSizeMBToTransmit = Integer.parseInt(Configuration.getString(MAX_FILE_SIZE_MB_TO_TRANSMIT, "250").get());
+          maxFileSizeBytesToTransmit = maxFileSizeMBToTransmit * 1024 * 1024;
         } catch (NumberFormatException e) {
           log.log(Level.WARNING, "maxFileSizeMBToTransmit must be an int", e);
         }
-        maxFileSizeMBToTransmit = maxFileSizeMBToTransmit * 1024 * 1024;
       }
     }
     // Initialize extra structured data to add to items
@@ -1813,7 +1813,7 @@ class SharePointRepository implements Repository {
 
       double dFileSize = tempFile.length();
       log.log(Level.INFO, "File Size for [" + filePath + "] :: Tmp File:[" + tempFile.getName() + "] -- [" + dFileSize + "]  bytes");
-      if (dFileSize > maxFileSizeMBToTransmit)
+      if (dFileSize > maxFileSizeBytesToTransmit)
       {
         log.log(Level.INFO, "Excluding File from Indexing - Size larger than allowed for file [" + filePath + "]");
         return null;
@@ -1868,7 +1868,7 @@ class SharePointRepository implements Repository {
 
 
 
-        if (dFileSize <= maxFileSizeMBToParse)
+        if (dFileSize <= maxFileSizeBytesToParse)
         {
         if (entityRecognition != null) {
           InputStream tikaFileInputStream = new FileInputStream(tempFile);
