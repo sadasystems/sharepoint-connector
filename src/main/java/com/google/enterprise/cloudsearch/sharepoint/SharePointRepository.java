@@ -206,6 +206,7 @@ class SharePointRepository implements Repository {
   //SADA Changes
   private static final String ENTITY_RECOGNITION_FOLDER = "entityRecognitionFolder";
   private static final String MAX_FILE_SIZE_MB_TO_PARSE = "maxFileSizeMBToParse";
+  private static final String MAX_FILE_SIZE_MB_TO_TRANSMIT = "maxFileSizeMBToTransmit";
   private static final String EXTRA_STRUCTURED_DATA = "extraStructuredData";
   private static final String TEMP_DOWNLOAD_FOLDER = "tempDownloadFolder";
 
@@ -215,6 +216,8 @@ class SharePointRepository implements Repository {
   private String objectType;
   /** the maximum file size (in MB) that can be parsed for EntityRecognition **/
   private int maxFileSizeMBToParse = 10;
+  /** the maximum file size (in MB) to transmit - if larger, only the metadata will be indexed **/
+  private int maxFileSizeMBToTransmit = 250;
   /** extra structured data to add to all items **/
   private Multimap<String,Object> extraStructuredData;
   /** temp folder for downloaded SharePoint files **/
@@ -419,15 +422,21 @@ class SharePointRepository implements Repository {
       if (StringUtils.isNotBlank(entityFolderPath)) {
         try {
           entityRecognition = new EntityRecognition(Paths.get(entityFolderPath));
-          try {
-            maxFileSizeMBToParse = Integer.parseInt(Configuration.getString("maxFileSizeMBToParse", "10").get());
-            maxFileSizeMBToParse = maxFileSizeMBToParse * 1024 * 1024;
-          } catch (NumberFormatException e) {
-            log.log(Level.WARNING, "maxFileSizeMBToParse must be an int", e);
-          }
         } catch (IOException| SAXException | ParserConfigurationException e) {
           log.log(Level.WARNING, "Unable to initialize EntityRecognition", e);
         }
+        try {
+          maxFileSizeMBToParse = Integer.parseInt(Configuration.getString(MAX_FILE_SIZE_MB_TO_PARSE, "10").get());
+        } catch (NumberFormatException e) {
+          log.log(Level.WARNING, "maxFileSizeMBToParse must be an int", e);
+        }
+        maxFileSizeMBToParse = maxFileSizeMBToParse * 1024 * 1024;
+        try {
+          maxFileSizeMBToTransmit = Integer.parseInt(Configuration.getString(MAX_FILE_SIZE_MB_TO_TRANSMIT, "250").get());
+        } catch (NumberFormatException e) {
+          log.log(Level.WARNING, "maxFileSizeMBToTransmit must be an int", e);
+        }
+        maxFileSizeMBToTransmit = maxFileSizeMBToTransmit * 1024 * 1024;
       }
     }
     // Initialize extra structured data to add to items
@@ -1804,9 +1813,10 @@ class SharePointRepository implements Repository {
 
       double dFileSize = tempFile.length();
       log.log(Level.INFO, "File Size for [" + filePath + "] :: Tmp File:[" + tempFile.getName() + "] -- [" + dFileSize + "]  bytes");
-      if (dFileSize > 1000000000)
+      if (dFileSize > maxFileSizeMBToTransmit)
       {
-        throw new IOException("File Size greater than 1G");
+        log.log(Level.INFO, "Excluding File from Indexing - Size larger than allowed for file [" + filePath + "]");
+        return null;
       }
       // End of SADA Changes
 
@@ -1858,7 +1868,7 @@ class SharePointRepository implements Repository {
 
 
 
-        if (dFileSize < maxFileSizeMBToParse)
+        if (dFileSize <= maxFileSizeMBToParse)
         {
         if (entityRecognition != null) {
           InputStream tikaFileInputStream = new FileInputStream(tempFile);
