@@ -1865,42 +1865,27 @@ class SharePointRepository implements Repository {
         }
 
         //Entity Extraction
-
-
-
-        if (dFileSize <= maxFileSizeBytesToParse)
-        {
-        if (entityRecognition != null) {
-          InputStream tikaFileInputStream = new FileInputStream(tempFile);
-          try {
+        if (dFileSize <= maxFileSizeBytesToParse) {
+          if (entityRecognition != null) {
             Multimap<String, Object> entities;
-
-            log.log(Level.INFO, "Processing entities for Mime Type (" + contentType + ") : ");
             try {
-              TikaUtils.TikaResult tikaResult = TikaUtils.parse(tikaFileInputStream);
-              entities = entityRecognition.findEntities(tikaResult.getContent(), filePath);
-            } catch (Exception ex) {
+              log.log(Level.INFO, "Processing entities for Mime Type (" + contentType + ") : ");
               try {
-                tikaFileInputStream.close();
-              } catch (Exception e) {
+                TikaUtils.TikaResult tikaResult = TikaUtils.parseAsProcess(tempFile);
+                entities = entityRecognition.findEntities(tikaResult.getContent(), filePath);
+              } catch (Exception ex) {
+                try (InputStream tikaFileInputStream = new FileInputStream(tempFile)) {
+                  String content = IOUtils.toString(tikaFileInputStream, "UTF-8");
+                  entities = entityRecognition.findEntities(content, filePath);
+                }
               }
-              tikaFileInputStream = new FileInputStream(tempFile);
-              String content = IOUtils.toString(tikaFileInputStream, "UTF-8");
-              entities = entityRecognition.findEntities(content, filePath);
+              log.log(Level.INFO, "Found entities for file (" + filePath + ") : " + entities);
+              multimap.putAll(entities);
+            } catch (Exception e) {
+              log.log(Level.WARNING, "Error processing EntityRecognition", e.getMessage());
             }
-            log.log(Level.INFO, "Found entities for file (" + filePath + ") : " + entities);
-            multimap.putAll(entities);
-          } catch (Exception e) {
-            // } catch (TikaException | SAXException e) {
-            log.log(Level.WARNING, "Error processing EntityRecognition", e.getMessage());
-          } finally {
-            tikaFileInputStream.close();
           }
-
-        }
-      }
-        else
-        {
+        } else {
           log.log(Level.INFO, "Excluding File from Entity Extraction - Size larger than allowed  for file [" + filePath + "]");
         }
 
