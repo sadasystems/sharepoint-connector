@@ -24,6 +24,7 @@ import com.google.api.client.http.AbstractInputStreamContent;
 import com.google.api.client.http.ByteArrayContent;
 import com.google.api.client.http.FileContent;
 import com.google.api.client.http.HttpMediaType;
+import com.google.api.client.json.GenericJson;
 import com.google.api.client.util.DateTime;
 import com.google.api.client.util.Strings;
 import com.google.api.services.cloudsearch.v1.model.Item;
@@ -35,6 +36,7 @@ import com.google.common.base.Ascii;
 import com.google.common.base.Splitter;
 import com.google.common.collect.*;
 import com.google.common.io.ByteStreams;
+import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.enterprise.cloudsearch.sdk.CheckpointCloseableIterable;
 import com.google.enterprise.cloudsearch.sdk.CheckpointCloseableIterableImpl;
@@ -109,6 +111,7 @@ import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import javax.annotation.Nullable;
 import javax.xml.namespace.QName;
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.ws.Holder;
@@ -1572,8 +1575,26 @@ class SharePointRepository implements Repository {
     RepositoryDoc.Builder docBuilder = new RepositoryDoc.Builder();
     if (isDocument) {
       itemBuilder.setItemType(ItemType.CONTENT_ITEM);
-      docBuilder.setContent(
-              getFileContent(itemObject.getUrl(), itemBuilder, true), ContentFormat.RAW);
+        AbstractInputStreamContent fileContent = getFileContent(itemObject.getUrl(), itemBuilder, true);
+        if(fileContent instanceof FileContent) {
+            // Register a callback to delete the temp file after RepositoryDoc is processed
+            final File tempFile = ((FileContent)fileContent).getFile();
+            docBuilder.setCallback(new FutureCallback<GenericJson>() {
+                @Override
+                public void onSuccess(@Nullable GenericJson result) {
+                    FileUtils.deleteQuietly(tempFile);
+                    log.log(Level.INFO, "Deleting temp file: " + tempFile);
+                }
+
+                @Override
+                public void onFailure(Throwable t) {
+                    FileUtils.deleteQuietly(tempFile);
+                    log.log(Level.INFO, "Deleting temp file: " + tempFile);
+                }
+            });
+        }
+        docBuilder.setContent(
+                fileContent, ContentFormat.RAW);
     } else {
       // Since list items can have attachments as child items, marking list items as containers
       itemBuilder.setItemType(ItemType.CONTAINER_ITEM);
@@ -1651,7 +1672,25 @@ class SharePointRepository implements Repository {
       return ApiOperations.deleteItem(polledItem.getName());
     }
     IndexingItemBuilder itemBuilder = IndexingItemBuilder.fromConfiguration(polledItem.getName());
-    AbstractInputStreamContent content = getFileContent(polledItem.getName(), itemBuilder, false);
+    RepositoryDoc.Builder docBuilder = new RepositoryDoc.Builder();
+    AbstractInputStreamContent fileContent = getFileContent(polledItem.getName(), itemBuilder, false);
+    if(fileContent instanceof FileContent) {
+        // Register a callback to delete the temp file after RepositoryDoc is processed
+        final File tempFile = ((FileContent)fileContent).getFile();
+        docBuilder.setCallback(new FutureCallback<GenericJson>() {
+            @Override
+            public void onSuccess(@Nullable GenericJson result) {
+                FileUtils.deleteQuietly(tempFile);
+                log.log(Level.INFO, "Deleting temp file: " + tempFile);
+            }
+
+            @Override
+            public void onFailure(Throwable t) {
+                FileUtils.deleteQuietly(tempFile);
+                log.log(Level.INFO, "Deleting temp file: " + tempFile);
+            }
+        });
+    }
     String parentItem = getUniqueIdFromRow(row);
     Acl acl =
             new Acl.Builder()
@@ -1663,9 +1702,9 @@ class SharePointRepository implements Repository {
             .setPayload(polledItem.decodePayload())
             .setContainerName(parentItem)
             .setItemType(ItemType.CONTENT_ITEM);
-    return new RepositoryDoc.Builder()
+    return docBuilder
             .setItem(itemBuilder.build())
-            .setContent(content, ContentFormat.RAW)
+            .setContent(fileContent, ContentFormat.RAW)
             .build();
   }
 
