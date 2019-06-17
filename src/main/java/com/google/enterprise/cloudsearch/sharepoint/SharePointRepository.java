@@ -16,10 +16,6 @@
 
 package com.google.enterprise.cloudsearch.sharepoint;
 
-import static com.google.common.base.Preconditions.checkNotNull;
-import static com.google.common.base.Preconditions.checkState;
-import static com.google.enterprise.cloudsearch.sdk.indexing.IndexingItemBuilder.FieldOrValue.withValue;
-
 import com.google.api.client.http.AbstractInputStreamContent;
 import com.google.api.client.http.ByteArrayContent;
 import com.google.api.client.http.FileContent;
@@ -34,9 +30,12 @@ import com.google.api.services.cloudsearch.v1.model.RepositoryError;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Ascii;
 import com.google.common.base.Splitter;
-import com.google.common.collect.*;
-import com.google.common.io.ByteStreams;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.LinkedHashMultimap;
+import com.google.common.collect.Multimap;
 import com.google.common.util.concurrent.FutureCallback;
+import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.enterprise.cloudsearch.sdk.CheckpointCloseableIterable;
 import com.google.enterprise.cloudsearch.sdk.CheckpointCloseableIterableImpl;
@@ -78,7 +77,23 @@ import com.microsoft.schemas.sharepoint.soap.VirtualServer;
 import com.microsoft.schemas.sharepoint.soap.Web;
 import com.microsoft.schemas.sharepoint.soap.Webs;
 import com.microsoft.schemas.sharepoint.soap.Xml;
+import com.sadasystems.gcs.utils.EntityRecognition;
+import com.sadasystems.gcs.utils.TikaUtils;
+import com.sadasystems.gcs.utils.sdk.indexing.template.CallbackApiOperation;
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang.StringUtils;
+import org.w3c.dom.Attr;
+import org.w3c.dom.Element;
+import org.w3c.dom.NamedNodeMap;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import org.xml.sax.SAXException;
 
+import javax.annotation.Nullable;
+import javax.xml.namespace.QName;
+import javax.xml.parsers.ParserConfigurationException;
+import javax.xml.ws.Holder;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -111,22 +126,10 @@ import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-import javax.annotation.Nullable;
-import javax.xml.namespace.QName;
-import javax.xml.parsers.ParserConfigurationException;
-import javax.xml.ws.Holder;
 
-import com.sadasystems.gcs.utils.EntityRecognition;
-import com.sadasystems.gcs.utils.TikaUtils;
-import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.IOUtils;
-import org.apache.commons.lang.StringUtils;
-import org.w3c.dom.Attr;
-import org.w3c.dom.Element;
-import org.w3c.dom.NamedNodeMap;
-import org.w3c.dom.Node;
-import org.w3c.dom.NodeList;
-import org.xml.sax.SAXException;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
+import static com.google.enterprise.cloudsearch.sdk.indexing.IndexingItemBuilder.FieldOrValue.withValue;
 
 class SharePointRepository implements Repository {
   private static final Logger log = Logger.getLogger(SharePointRepository.class.getName());
@@ -1573,25 +1576,26 @@ class SharePointRepository implements Repository {
     boolean isDocument =
             (contentTypeId != null) && contentTypeId.startsWith(CONTENTTYPEID_DOCUMENT_PREFIX);
     RepositoryDoc.Builder docBuilder = new RepositoryDoc.Builder();
+    FutureCallback<List<GenericJson>> callback = null;
     if (isDocument) {
       itemBuilder.setItemType(ItemType.CONTENT_ITEM);
         AbstractInputStreamContent fileContent = getFileContent(itemObject.getUrl(), itemBuilder, true);
         if(fileContent instanceof FileContent) {
-            // Register a callback to delete the temp file after RepositoryDoc is processed
-            final File tempFile = ((FileContent)fileContent).getFile();
-            docBuilder.setCallback(new FutureCallback<GenericJson>() {
-                @Override
-                public void onSuccess(@Nullable GenericJson result) {
-                    FileUtils.deleteQuietly(tempFile);
-                    log.log(Level.INFO, "Deleting temp file: " + tempFile);
-                }
+          // Register a callback to delete the temp file after RepositoryDoc is processed
+          final File tempFile = ((FileContent) fileContent).getFile();
+          callback = new FutureCallback<List<GenericJson>>() {
+            @Override
+            public void onSuccess(@Nullable List<GenericJson> result) {
+              FileUtils.deleteQuietly(tempFile);
+              log.log(Level.INFO, "Deleting temp file: " + tempFile);
+            }
 
-                @Override
-                public void onFailure(Throwable t) {
-                    FileUtils.deleteQuietly(tempFile);
-                    log.log(Level.INFO, "Deleting temp file: " + tempFile);
-                }
-            });
+            @Override
+            public void onFailure(Throwable t) {
+              FileUtils.deleteQuietly(tempFile);
+              log.log(Level.INFO, "Deleting temp file: " + tempFile);
+            }
+          };
         }
         docBuilder.setContent(
                 fileContent, ContentFormat.RAW);
@@ -1618,7 +1622,13 @@ class SharePointRepository implements Repository {
               ByteArrayContent.fromString(null, listItemContentTemplate.apply(extractedMetadataValues)),
               ContentFormat.HTML);
     }
-    return docBuilder.setItem(itemBuilder.build()).build();
+    RepositoryDoc repositoryDoc = docBuilder.setItem(itemBuilder.build()).build();
+    if(callback != null) {
+      CallbackApiOperation operation = new CallbackApiOperation(repositoryDoc);
+      Futures.addCallback(operation.getOperationResult(), callback, MoreExecutors.directExecutor());
+      return operation;
+    }
+    return repositoryDoc;
   }
 
   private static void addChildIdsToRepositoryDoc(
@@ -1661,9 +1671,9 @@ class SharePointRepository implements Repository {
     Element row = getChildrenWithName(data, ROW_ELEMENT).get(0);
     String strAttachments = row.getAttribute(OWS_ATTACHMENTS_ATTRIBUTE);
     int attachments =
-            ((strAttachments == null) || "".equals(strAttachments))
-                    ? 0
-                    : Integer.parseInt(strAttachments);
+        ((strAttachments == null) || "".equals(strAttachments))
+            ? 0
+            : Integer.parseInt(strAttachments);
     if (attachments <= 0) {
       // Either the attachment has been removed or there was a really odd
       // collection of documents in a Document Library. Therefore, we let the
@@ -1673,39 +1683,45 @@ class SharePointRepository implements Repository {
     }
     IndexingItemBuilder itemBuilder = IndexingItemBuilder.fromConfiguration(polledItem.getName());
     RepositoryDoc.Builder docBuilder = new RepositoryDoc.Builder();
+    FutureCallback<List<GenericJson>> callback = null;
     AbstractInputStreamContent fileContent = getFileContent(polledItem.getName(), itemBuilder, false);
-    if(fileContent instanceof FileContent) {
-        // Register a callback to delete the temp file after RepositoryDoc is processed
-        final File tempFile = ((FileContent)fileContent).getFile();
-        docBuilder.setCallback(new FutureCallback<GenericJson>() {
-            @Override
-            public void onSuccess(@Nullable GenericJson result) {
-                FileUtils.deleteQuietly(tempFile);
-                log.log(Level.INFO, "Deleting temp file: " + tempFile);
-            }
+    if (fileContent instanceof FileContent) {
+      // Register a callback to delete the temp file after RepositoryDoc is processed
+      final File tempFile = ((FileContent) fileContent).getFile();
+      callback = new FutureCallback<List<GenericJson>>() {
+        @Override
+        public void onSuccess(@Nullable List<GenericJson> result) {
+          FileUtils.deleteQuietly(tempFile);
+          log.log(Level.INFO, "Deleting temp file: " + tempFile);
+        }
 
-            @Override
-            public void onFailure(Throwable t) {
-                FileUtils.deleteQuietly(tempFile);
-                log.log(Level.INFO, "Deleting temp file: " + tempFile);
-            }
-        });
+        @Override
+        public void onFailure(Throwable t) {
+          FileUtils.deleteQuietly(tempFile);
+          log.log(Level.INFO, "Deleting temp file: " + tempFile);
+        }
+      };
     }
     String parentItem = getUniqueIdFromRow(row);
     Acl acl =
-            new Acl.Builder()
-                    .setInheritanceType(InheritanceType.PARENT_OVERRIDE)
-                    .setInheritFrom(parentItem)
-                    .build();
-    itemBuilder
-            .setAcl(acl)
-            .setPayload(polledItem.decodePayload())
-            .setContainerName(parentItem)
-            .setItemType(ItemType.CONTENT_ITEM);
-    return docBuilder
-            .setItem(itemBuilder.build())
-            .setContent(fileContent, ContentFormat.RAW)
+        new Acl.Builder()
+            .setInheritanceType(InheritanceType.PARENT_OVERRIDE)
+            .setInheritFrom(parentItem)
             .build();
+    itemBuilder
+        .setAcl(acl)
+        .setPayload(polledItem.decodePayload())
+        .setContainerName(parentItem)
+        .setItemType(ItemType.CONTENT_ITEM);
+    RepositoryDoc repositoryDoc = docBuilder
+        .setItem(itemBuilder.build())
+        .setContent(fileContent, ContentFormat.RAW)
+        .build();
+    CallbackApiOperation operation = new CallbackApiOperation(repositoryDoc);
+    if(callback != null) {
+      Futures.addCallback(operation.getOperationResult(), callback, MoreExecutors.directExecutor());
+    }
+    return operation;
   }
 
   private Map<String, PushItem> getChildListEntries(
