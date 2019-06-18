@@ -82,6 +82,7 @@ import com.sadasystems.gcs.utils.TikaUtils;
 import com.sadasystems.gcs.utils.sdk.indexing.template.CallbackApiOperation;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.io.filefilter.AgeFileFilter;
 import org.apache.commons.lang.StringUtils;
 import org.w3c.dom.Attr;
 import org.w3c.dom.Element;
@@ -94,10 +95,7 @@ import javax.annotation.Nullable;
 import javax.xml.namespace.QName;
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.ws.Holder;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
 import java.net.Authenticator;
 import java.net.MalformedURLException;
 import java.net.URI;
@@ -137,6 +135,8 @@ class SharePointRepository implements Repository {
   private static final String PUSH_TYPE_MODIFIED = "MODIFIED";
   private static final String PUSH_TYPE_NOT_MODIFIED = "NOT_MODIFIED";
   private static final String PUSH_TYPE_REPOSITORY_ERROR = "REPOSITORY_ERROR";
+
+  private Object deleteLock = new Object();
 
   /**
    * The data element within a self-describing XML blob. See
@@ -228,6 +228,9 @@ class SharePointRepository implements Repository {
   private Multimap<String,Object> extraStructuredData;
   /** temp folder for downloaded SharePoint files **/
   private File tempDownloadFolder;
+
+  private long lLastCleanupTime = System.currentTimeMillis();
+  long lCutoff = (15 * 60 * 1000);
 
   private static final TimeZone gmt = TimeZone.getTimeZone("GMT");
   /** RFC 822 date format, as updated by RFC 1123. */
@@ -909,6 +912,9 @@ class SharePointRepository implements Repository {
         return ApiOperations.deleteItem(item.getName());
       }
 
+      //SADA Changes to check for stale tmp files
+      cleanOlderFiles();
+
       if (SharePointObject.SITE_COLLECTION.equals(objectType)) {
         return getSiteCollectionDocContent(item, siteConnector, payloadObject);
       }
@@ -1394,8 +1400,8 @@ class SharePointRepository implements Repository {
     if (!result || (itemId.value == null) || (listId.value == null)) {
       log.log(
               Level.WARNING,
-              "Unable to identify itemId for Item {0}. Deleting item",
-              polledItem.getName());
+        "Unable to identify itemId for Item [{0}]-[{1}]. Deleting item",
+        new Object[] {polledItem.getName(), itemObject.getUrl()});
       return ApiOperations.deleteItem(polledItem.getName());
     }
     com.microsoft.schemas.sharepoint.soap.List l =
@@ -1482,7 +1488,12 @@ class SharePointRepository implements Repository {
         throw new IOException("Could not find parent folder's itemId");
       }
       if (!listId.value.equals(folderListId.value)) {
-        throw new AssertionError("Unexpected listId value");
+       // throw new AssertionError("Unexpected listId value");
+
+        throw new RepositoryException.Builder()
+          .setErrorMessage("Unexpected listId value " + listId.value)
+          .setErrorType(RepositoryException.ErrorType.CLIENT_ERROR)
+          .build();
       }
       ItemData folderItem =
               scConnector.getSiteDataClient().getContentItem(listId.value, folderItemId.value);
@@ -1522,11 +1533,21 @@ class SharePointRepository implements Repository {
     String type = getValueFromIdPrefixedField(row, OWS_FSOBJTYPE_ATTRIBUTE);
     boolean isFolder = "1".equals(type);
     String serverUrl = row.getAttribute(OWS_SERVERURL_ATTRIBUTE);
-    if (serverUrl.contains("&") || serverUrl.contains("=") || serverUrl.contains("%")) {
-      throw new AssertionError();
-    }
+
+    //Removed by Google Support
+   // if (serverUrl.contains("&") || serverUrl.contains("=") || serverUrl.contains("%")) {
+    //  throw new AssertionError();
+   // }
+
     Element schemaElement = getFirstChildWithName(xml, SCHEMA_ELEMENT);
     Multimap<String, Object> extractedMetadataValues = extractMetadataValues(schemaElement, row);
+
+    //SADA Changes
+    if (extraStructuredData.size() > 0) {
+      extractedMetadataValues.putAll(extraStructuredData);
+      log.log(Level.INFO, "Adding extra structured data (" + serverUrl + ") : " + extraStructuredData);
+    }
+
     String contentType = row.getAttribute(OWS_CONTENTTYPE_ATTRIBUTE);
     String objectType = contentType == null ? "" : getNormalizedObjectType(contentType);
     if (!Strings.isNullOrEmpty(objectType) && StructuredData.hasObjectDefinition(objectType)) {
@@ -1539,7 +1560,13 @@ class SharePointRepository implements Repository {
       root += "/";
       String folder = scConnector.encodeDocId(serverUrl);
       if (!folder.startsWith(root)) {
-        throw new AssertionError();
+        //Removed by Google Support
+        //throw new AssertionError();
+        throw new RepositoryException.Builder()
+          .setErrorMessage(
+            String.format("Folder path [%s] doesn't start with root path [%s]", folder, root))
+          .setErrorType(RepositoryException.ErrorType.CLIENT_ERROR)
+          .build();
       }
       try {
         String defaultViewUrl = scConnector.encodeDocId(l.getMetadata().getDefaultViewUrl());
@@ -1579,7 +1606,9 @@ class SharePointRepository implements Repository {
     FutureCallback<List<GenericJson>> callback = null;
     if (isDocument) {
       itemBuilder.setItemType(ItemType.CONTENT_ITEM);
-        AbstractInputStreamContent fileContent = getFileContent(itemObject.getUrl(), itemBuilder, true);
+
+      //SADA Changes
+      AbstractInputStreamContent fileContent = getFileContent(itemObject.getUrl(),itemBuilder,true, extractedMetadataValues);
         if(fileContent instanceof FileContent) {
           // Register a callback to delete the temp file after RepositoryDoc is processed
           final File tempFile = ((FileContent) fileContent).getFile();
@@ -1622,7 +1651,31 @@ class SharePointRepository implements Repository {
               ByteArrayContent.fromString(null, listItemContentTemplate.apply(extractedMetadataValues)),
               ContentFormat.HTML);
     }
-    RepositoryDoc repositoryDoc = docBuilder.setItem(itemBuilder.build()).build();
+
+    Item item=itemBuilder.build();
+
+    if (item.getMetadata().getTitle() == null)
+    {
+      Collection<Object> colName = extractedMetadataValues.get("Name");
+      if (colName != null)
+      {
+        //log.log(Level.INFO, "Final Title[" + colName.size() + "]");
+        //String[] aName = sName.split(",");
+        //item.getMetadata().setTitle(aName[0]);
+        Optional<Object> firstElement = colName.stream().findFirst();
+        //log.log(Level.INFO, "Final Name[" + firstElement.get() + "]");
+        extractedMetadataValues.put("title",((String)firstElement.get()).trim());
+        item.getMetadata().setTitle(((String)firstElement.get()).trim());
+
+      }
+    }
+
+
+
+    log.log(Level.INFO, "Final Title[" + item.getMetadata().getTitle() + "]");
+    log.log(Level.INFO, "Final Multimap[" + extractedMetadataValues + "]");
+
+    RepositoryDoc repositoryDoc = docBuilder.setItem(item).build();
     if(callback != null) {
       CallbackApiOperation operation = new CallbackApiOperation(repositoryDoc);
       Futures.addCallback(operation.getOperationResult(), callback, MoreExecutors.directExecutor());
@@ -1658,7 +1711,15 @@ class SharePointRepository implements Repository {
     ItemData itemData = scConnector.getSiteDataClient().getContentItem(listId.value, itemId.value);
     Xml xml = itemData.getXml();
     Element data = getFirstChildWithName(xml, DATA_ELEMENT);
-    assert data != null;
+    //Google Support Change
+    //assert data != null;
+    if (data == null) {
+      throw new RepositoryException.Builder()
+        .setErrorMessage("ItemData from getContentItem is null")
+        .setErrorType(RepositoryException.ErrorType.CLIENT_ERROR)
+        .build();
+    }
+
     String itemCount = data.getAttribute("ItemCount");
     if ("0".equals(itemCount)) {
       log.fine("Could not get parent list item as ItemCount is 0.");
@@ -1682,9 +1743,13 @@ class SharePointRepository implements Repository {
       return ApiOperations.deleteItem(polledItem.getName());
     }
     IndexingItemBuilder itemBuilder = IndexingItemBuilder.fromConfiguration(polledItem.getName());
+    log.log(Level.INFO, "Attachment Item[" + polledItem.getName()+ "]");
+
+    //SADA Changes
+
     RepositoryDoc.Builder docBuilder = new RepositoryDoc.Builder();
     FutureCallback<List<GenericJson>> callback = null;
-    AbstractInputStreamContent fileContent = getFileContent(polledItem.getName(), itemBuilder, false);
+    AbstractInputStreamContent fileContent = getFileContent(polledItem.getName(), itemBuilder, false, null);
     if (fileContent instanceof FileContent) {
       // Register a callback to delete the temp file after RepositoryDoc is processed
       final File tempFile = ((FileContent) fileContent).getFile();
@@ -1836,8 +1901,34 @@ class SharePointRepository implements Repository {
     return entries;
   }
 
-  private AbstractInputStreamContent getFileContent(
-          String fileUrl, IndexingItemBuilder item, boolean setLastModified) throws IOException {
+  private void cleanOlderFiles()
+  {
+    try
+    {
+
+      synchronized (deleteLock) {
+        log.log(Level.INFO, "Checking for Stale Files");
+        if ((System.currentTimeMillis() - (lLastCleanupTime)) > lCutoff) {
+          //Test and cleanup any orphan tmp files
+          File[] oldFiles = tempDownloadFolder.listFiles((FileFilter) new AgeFileFilter(lLastCleanupTime));
+          log.log(Level.INFO, "Found [" + oldFiles.length + "] Stale Files");
+          for (File file : oldFiles) {
+            if (!FileUtils.deleteQuietly(file))
+              log.log(Level.INFO, "ERROR - Could not delete stale file::[" + file.getAbsolutePath() + "]");
+          }
+
+          //Set the  new time
+          lLastCleanupTime = System.currentTimeMillis();
+        }
+      }
+    }
+    catch (Exception ex)
+    {
+      //Ignore
+    }
+  }
+
+  private AbstractInputStreamContent getFileContent(String fileUrl, IndexingItemBuilder item, boolean setLastModified,  Multimap<String, Object> extractedMetadataValues) throws IOException {
     checkNotNull(item, "item can not be null");
     SharePointUrl sharepointFileUrl;
     String baseUrl;
@@ -1862,8 +1953,10 @@ class SharePointRepository implements Repository {
     }
     // SADA Changes
     InputStream contentStream = fi.getContents();
-    File tempFile = File.createTempFile("temp", ".dat", tempDownloadFolder);
+    File tempFile = null;
     try {
+
+      tempFile = File.createTempFile("temp", ".dat", tempDownloadFolder);
       FileUtils.copyInputStreamToFile(contentStream, tempFile);
 
       double dFileSize = tempFile.length();
@@ -1871,6 +1964,12 @@ class SharePointRepository implements Repository {
       if (dFileSize > maxFileSizeBytesToTransmit)
       {
         log.log(Level.INFO, "Excluding File from Indexing - Size larger than allowed for file [" + filePath + "]");
+
+        if ((tempFile != null) && (tempFile.exists()))
+        {
+          tempFile.delete();
+        }
+
         return null;
       }
       // End of SADA Changes
@@ -1912,11 +2011,10 @@ class SharePointRepository implements Repository {
 
       //SADA Changes
       try {
-        Multimap<String, Object> multimap = LinkedHashMultimap.create();
 
-        if (extraStructuredData.size() > 0) {
-          multimap.putAll(extraStructuredData);
-          log.log(Level.INFO, "Adding extra structured data (" + filePath + ") : " + extraStructuredData);
+        if (extractedMetadataValues == null) {
+          log.log(Level.INFO, "Attachment - No Mulimap");
+          extractedMetadataValues = LinkedHashMultimap.create();
         }
 
         //Entity Extraction
@@ -1935,17 +2033,13 @@ class SharePointRepository implements Repository {
                 }
               }
               log.log(Level.INFO, "Found entities for file (" + filePath + ") : " + entities);
-              multimap.putAll(entities);
+              extractedMetadataValues.putAll(entities);
             } catch (Exception e) {
               log.log(Level.WARNING, "Error processing EntityRecognition", e.getMessage());
             }
           }
         } else {
           log.log(Level.INFO, "Excluding File from Entity Extraction - Size larger than allowed  for file [" + filePath + "]");
-        }
-
-        if (multimap != null) {
-          item.setValues(multimap);
         }
 
       } catch (Exception ex) {
@@ -1958,7 +2052,10 @@ class SharePointRepository implements Repository {
           return htmlContentFilter.getParsedHtmlContent(fileInputStream, baseUrl, contentType);
         } finally {
           try {
-            tempFile.delete();
+            if ((tempFile != null) && (tempFile.exists()))
+            {
+              tempFile.delete();
+            }
           } catch (Exception e) {
             log.log(
                     Level.WARNING,
@@ -1970,7 +2067,10 @@ class SharePointRepository implements Repository {
         return new FileContent(contentType, tempFile);
       }
     } catch(Exception e) {
-      tempFile.delete();
+      if ((tempFile != null) && (tempFile.exists()))
+      {
+        tempFile.delete();
+      }
       throw e;
     }
     //End of SADA Changes
