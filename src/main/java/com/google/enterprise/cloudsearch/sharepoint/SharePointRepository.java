@@ -78,6 +78,7 @@ import com.microsoft.schemas.sharepoint.soap.Web;
 import com.microsoft.schemas.sharepoint.soap.Webs;
 import com.microsoft.schemas.sharepoint.soap.Xml;
 import com.sadasystems.gcs.utils.EntityRecognition;
+import com.sadasystems.gcs.utils.FilePatternUtils;
 import com.sadasystems.gcs.utils.TikaUtils;
 import com.sadasystems.gcs.utils.sdk.indexing.template.CallbackApiOperation;
 import org.apache.commons.io.FileUtils;
@@ -215,6 +216,8 @@ class SharePointRepository implements Repository {
   private static final String MAX_FILE_SIZE_MB_TO_TRANSMIT = "maxFileSizeMBToTransmit";
   private static final String EXTRA_STRUCTURED_DATA = "extraStructuredData";
   private static final String TEMP_DOWNLOAD_FOLDER = "tempDownloadFolder";
+  private static final String FILE_EXCLUSION = "fileExclusion";
+  private static final String FILE_INCLUSION = "fileInclusion";
 
   /** Look for entities within content of files **/
   private EntityRecognition entityRecognition;
@@ -228,6 +231,8 @@ class SharePointRepository implements Repository {
   private Multimap<String,Object> extraStructuredData;
   /** temp folder for downloaded SharePoint files **/
   private File tempDownloadFolder;
+  /** used to include/exclude certain paths **/
+  private FilePatternUtils filePatterns;
 
   private long lLastCleanupTime = System.currentTimeMillis();
   long lCutoff = (15 * 60 * 1000);
@@ -464,6 +469,26 @@ class SharePointRepository implements Repository {
 
     tempDownloadFolder = new File(Configuration.getString(TEMP_DOWNLOAD_FOLDER, System.getProperty("java.io.tmpdir")).get());
 
+    //Changes for file exclusion
+
+    String fileExclusions = Configuration.getString(FILE_EXCLUSION, "").get();
+    String fileInclusions = Configuration.getString(FILE_INCLUSION, "").get();
+
+    try {
+      File fExclude = null;
+      File fInclude = null;
+      if (StringUtils.isNotBlank(fileExclusions)) {
+        fExclude = new File(fileExclusions);
+      }
+
+      if (StringUtils.isNotBlank(fileExclusions)) {
+        fInclude = new File(fileInclusions);
+      }
+
+      filePatterns = new FilePatternUtils(fInclude, fExclude);
+    } catch (Exception e) {
+      log.log(Level.WARNING, "Unable to initialize FilePatterns", e);
+    }
     //End of SADA Changes
   }
 
@@ -874,6 +899,9 @@ class SharePointRepository implements Repository {
               parseException);
       return deleteItemOrPushErrorForInvalidPayload(item);
     }
+
+
+
     try {
       String objectType = payloadObject.getObjectType();
       if (!payloadObject.isValid()) {
@@ -897,10 +925,21 @@ class SharePointRepository implements Repository {
         return getVirtualServerDocContent(item);
       }
 
+
+
       String itemUrl =
-              SharePointObject.LIST_ITEM.equals(objectType) || SharePointObject.LIST.equals(objectType)
-                      ? payloadObject.getUrl()
-                      : item.getName();
+        SharePointObject.LIST_ITEM.equals(objectType) || SharePointObject.LIST.equals(objectType)
+          ? payloadObject.getUrl()
+          : item.getName();
+
+      //SADA Chages for exclusions
+      log.log(Level.INFO, "Checking File Exclusion ::[" + itemUrl + "]");
+      if (!filePatterns.isInclude(itemUrl)) {
+        log.log(Level.INFO, "Do Not Push child. File Excluded from Index ::[" + itemUrl + "]");
+        return ApiOperations.deleteItem(item.getName());
+      }
+
+      log.log(Level.INFO, "Indexing File  ::[" + itemUrl + "]");
 
       SiteConnector siteConnector;
       try {
@@ -2008,6 +2047,8 @@ class SharePointRepository implements Repository {
           log.log(Level.INFO, "Could not parse Last-Modified: {0}", lastModifiedString);
         }
       }
+
+
 
       //SADA Changes
       try {
