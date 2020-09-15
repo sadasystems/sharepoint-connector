@@ -50,6 +50,9 @@ public class SharePointObjectTest {
     assertTrue(siteCollection.isValid());
     validateParseAndEquals(siteCollection);
 
+    System.out.println(siteCollection.encodePayload());
+
+    SharePointObject sp = SharePointObject.parse(siteCollection.encodePayload());
     SharePointObject web =
         new SharePointObject.Builder(SharePointObject.WEB)
             .setUrl("http://sp.com/web")
