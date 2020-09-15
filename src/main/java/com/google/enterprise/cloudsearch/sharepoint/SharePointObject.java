@@ -62,6 +62,7 @@ public class SharePointObject extends GenericJson {
   @Key private String webId;
   @Key private String listId;
   @Key private String itemId;
+  @Key private boolean bIsACLDepthInvalid;
 
   /**
    * Default constructor for Json parsing
@@ -79,6 +80,7 @@ public class SharePointObject extends GenericJson {
     this.webId = builder.webId;
     this.listId = builder.listId;
     this.itemId = builder.itemId;
+    this.bIsACLDepthInvalid = false;
     setFactory(JSON_FACTORY);
   }
 
@@ -153,6 +155,15 @@ public class SharePointObject extends GenericJson {
     return itemId;
   }
 
+  boolean isACLDepthInvalid() {
+    return this.bIsACLDepthInvalid;
+  }
+
+  public void setIsACLDepthInvalid(boolean bIsACLDepthInvalid) {
+    this.bIsACLDepthInvalid = bIsACLDepthInvalid;
+  }
+
+
   /** Builder object for creating {@link SharePointObject} to include in payload. */
   public static class Builder {
     private String objectType;
@@ -162,6 +173,11 @@ public class SharePointObject extends GenericJson {
     private String webId;
     private String listId;
     private String itemId;
+    private boolean bIsACLDepthInvalid = false;
+
+    public void setIsACLDepthInvalid(boolean bIsACLDepthInvalid) {
+      this.bIsACLDepthInvalid = bIsACLDepthInvalid;
+    }
 
     public Builder(String objectType) {
       this.objectType = objectType;
