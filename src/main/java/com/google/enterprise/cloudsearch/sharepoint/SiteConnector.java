@@ -425,7 +425,42 @@ class SiteConnector {
       }
       permits.add(principal);
     }
-    return permits;
+
+    //ONLY Change for 100 + external identities. Convert to gsuite principals.Using 75 as cutoff
+    //if ((permits != null) && (permits.size() > 75))
+   // {
+      List<Principal> convertedPermits = new LinkedList<Principal>();
+
+      for (Principal _principal: permits)
+      {
+        if (_principal.getGroupResourceName() != null)
+        {
+          //This means it is a group. Just add it back
+          log.log(Level.INFO, "Adding Group[" + _principal.getGroupResourceName() + "] and [" + _principal.getUserResourceName() + "]");
+          convertedPermits.add(_principal);
+        }
+        else
+        {
+          //convert to gsuite principal
+          String sIdentity = _principal.getUserResourceName();
+          String sEmail = sIdentity.substring(sIdentity.lastIndexOf("/") + 1);
+
+          if (!sEmail.contains("@"))
+          {
+            sEmail = sEmail + "@agios.com";
+          }
+
+          log.log(Level.INFO, "Adding User[" + _principal.getGroupResourceName() + "] and [" + _principal.getUserResourceName() + "]");
+
+          convertedPermits.add(Acl.getGoogleUserPrincipal(sEmail));
+
+        }
+      }
+
+      return convertedPermits;
+
+
+    //return permits;
   }
 
   private MemberIdMapping getMemberIdMapping() throws IOException {
